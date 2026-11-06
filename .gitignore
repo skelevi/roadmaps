@@ -1,0 +1,14 @@
+# окружение и кэш
+.venv/
+__pycache__/
+*.pyc
+.webview/
+
+# сборка
+build/
+dist/
+*.spec
+*.zip
+
+# личные карты пользователя (пример лежит в examples/)
+roadmaps/

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Дорожные карты</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="search"><span class="ico" data-icon="search"></span><input id="search" placeholder="Поиск по картам и этапам"></div>
+
+    <div class="sec-head"><span>ДОРОЖНЫЕ КАРТЫ</span><button class="ibtn" id="btn-new-map" title="Новая карта" data-icon="plus"></button></div>
+    <div id="new-map" class="hidden"><input id="new-map-input" placeholder="Название карты, Enter"></div>
+    <div id="maps"></div>
+
+    <div class="sec-head"><span>ЭТАПЫ КАРТЫ</span></div>
+    <div class="tabs" id="filter">
+      <button data-f="all" class="on">Все</button><button data-f="active">Активные</button><button data-f="done">Готовые</button>
+    </div>
+    <div id="stages"></div>
+
+    <div class="side-foot">
+      <div><b>Мои карты</b><small id="maps-count"></small></div>
+      <button class="ibtn" id="btn-folder" title="Открыть папку с картами" data-icon="folder"></button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="top">
+      <button class="ibtn" id="btn-side" title="Скрыть/показать панель" data-icon="sidebar"></button>
+      <div class="crumbs"><span class="muted">Дорожные карты</span><span class="muted">›</span><b id="map-title" title="Двойной клик — переименовать"></b>
+        <span id="top-progress"></span></div>
+      <div class="grow"></div>
+      <button class="btn primary" id="btn-export"><span data-icon="export"></span>Экспорт</button>
+    </header>
+
+    <div id="canvas">
+      <div id="viewport">
+        <svg id="edges"><defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker>
+          <marker id="arr-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a78bfa"/></marker>
+        </defs><g id="edge-g"></g><path id="edge-ghost" class="hidden"/></svg>
+        <div id="items"></div>
+      </div>
+
+      <div id="toolbar">
+        <button data-tool="hand" title="Рука — двигать холст (H, 1)" data-icon="hand"><sub>1</sub></button>
+        <button data-tool="select" title="Выделение (V, 2)" data-icon="pointer"><sub>2</sub></button>
+        <i class="sep"></i>
+        <button data-tool="stage" title="Новый этап — клик по холсту (S, 3)" data-icon="square"><sub>3</sub></button>
+        <button data-tool="milestone" title="Веха-ромб — клик по холсту (M, 4)" data-icon="diamond"><sub>4</sub></button>
+        <button data-tool="connect" title="Связь — клик по первому этапу, потом по второму (C, 5)" data-icon="arrow"><sub>5</sub></button>
+        <button data-tool="note" title="Текст — клик по холсту (T, 6)" data-icon="type"><sub>6</sub></button>
+        <i class="sep"></i>
+        <button id="btn-del" title="Удалить выделенное (Delete)" data-icon="trash"></button>
+      </div>
+
+      <div id="empty" class="hidden">
+        <h2>Пустая карта</h2>
+        <p>Выберите инструмент «Этап» (3) и кликните по холсту —<br>или попросите Claude составить карту.</p>
+      </div>
+
+      <div id="bottom-left" class="panel">
+        <button class="ibtn" id="z-out" data-icon="minus" title="Отдалить"></button>
+        <span id="z-val">100%</span>
+        <button class="ibtn" id="z-in" data-icon="plus" title="Приблизить"></button>
+        <button class="ibtn" id="z-fit" data-icon="fit" title="Показать всё (F)"></button>
+        <i class="sep"></i>
+        <button class="ibtn" id="undo" data-icon="undo" title="Отменить (Ctrl+Z)"></button>
+        <button class="ibtn" id="redo" data-icon="redo" title="Повторить (Ctrl+Y)"></button>
+      </div>
+
+      <div id="timeline" class="panel"><div id="tl-track"></div></div>
+
+      <div id="minimap" class="panel">
+        <div class="mm-head" id="mm-toggle"><span data-icon="map"></span>Обзор<span class="grow"></span><span data-icon="chevron"></span></div>
+        <canvas id="mm" width="220" height="120"></canvas>
+      </div>
+
+      <div id="editor" class="hidden"></div>
+      <div id="export-menu" class="menu hidden">
+        <button data-act="md">Сохранить как Markdown (.md)</button>
+        <button data-act="png">Сохранить картинку (PNG)</button>
+        <button data-act="folder">Открыть папку с файлами карт</button>
+      </div>
+      <div id="toast" class="hidden"></div>
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
