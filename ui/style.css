@@ -187,8 +187,138 @@ svg.i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-widt
 .menu button { text-align: left; padding: 8px 10px; border-radius: 5px; }
 .menu button:hover { background: var(--panel2); }
 
-#toast { position: absolute; left: 50%; top: 60px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line2); padding: 8px 14px; border-radius: 8px; box-shadow: 0 8px 30px #000a; }
+#toast { position: absolute; left: 50%; top: 68px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line2); padding: 8px 14px; border-radius: 8px; box-shadow: 0 8px 30px #000a; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ======================= Анимации и фишки ======================= */
+.foot-btns { display: flex; gap: 2px; }
+#btn-anim.on { color: var(--yellow); }
+
+/* появление карточек при открытии карты */
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+.card.enter, .note.enter { animation: cardIn .42s cubic-bezier(.2, .8, .2, 1) backwards; animation-delay: var(--d, 0s); }
+
+/* карточка изменилась в файле (например, карту обновил Claude) */
+@keyframes changed { 0% { box-shadow: 0 0 0 2px var(--accent2), 0 0 28px #3b82f6aa; } 100% { box-shadow: 0 0 0 0 transparent, 0 6px 24px #0006; } }
+.stage.changed { animation: changed 2.2s ease-out both; }
+.milestone.changed .dia { animation: changed 2.2s ease-out both; }
+
+/* этап закрыт */
+@keyframes celebrate { 0% { box-shadow: 0 0 0 2px var(--green), 0 0 36px #22c55e99; transform: scale(1.025); }
+  60% { transform: scale(1); } 100% { box-shadow: 0 6px 24px #0006; } }
+.stage.celebrate { animation: celebrate 1.6s ease-out both; }
+
+/* галочка задачи «щёлкает» */
+@keyframes pop { 0% { transform: scale(.6); } 55% { transform: scale(1.35); } 100% { transform: scale(1); } }
+.task-check.pop { animation: pop .35s cubic-bezier(.3, 1.6, .5, 1); }
+
+/* поток по стрелкам к этапам, которые сейчас в работе */
+@keyframes flow { to { stroke-dashoffset: -32; } }
+#edges path.edge.flow { stroke: #3b82f6aa; stroke-dasharray: 7 9; animation: flow 1.6s linear infinite; }
+#edges path.edge.hov { stroke: var(--accent2); stroke-width: 2.4; marker-end: url(#arr-hl); stroke-dasharray: none; }
+
+/* пройденные вехи мягко мерцают */
+@keyframes shimmer { 0%, 100% { box-shadow: 0 0 14px #eab30844; } 50% { box-shadow: 0 0 26px #eab308aa; } }
+.milestone.st-done .dia { animation: shimmer 3.2s ease-in-out infinite; }
+
+/* плавные мелочи */
+.bar i { transition: width .35s ease; }
+.ring .fg { transition: stroke-dasharray .4s ease; }
+.map-row, .stage-row, .btn, .ibtn, #toolbar button, .tabs button { transition: background .15s, color .15s; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+#toast:not(.hidden) { animation: toastIn .22s ease-out; }
+
+/* быстрая задача */
+.add-task { position: absolute; right: 8px; bottom: 6px; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line2);
+  background: var(--panel2); color: var(--muted); font-size: 16px; line-height: 18px; opacity: 0; transition: opacity .15s, color .15s; }
+.stage:hover .add-task { opacity: 1; }
+.add-task:hover { color: var(--text); border-color: var(--accent); }
+.quick-task { width: 100%; margin-top: 6px; font-size: 12px; padding: 4px 6px; }
+
+/* конфетти */
+#confetti { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 6; }
+
+/* справка */
+#help { position: absolute; inset: 0; background: #05070dcc; display: flex; align-items: center; justify-content: center; z-index: 7; }
+@keyframes helpIn { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+.help-box { width: min(560px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line2); border-radius: 12px;
+  padding: 14px 18px 16px; box-shadow: 0 20px 60px #000c; animation: helpIn .18s ease-out; }
+.help-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 15px; }
+.help-grid { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 8px 12px; align-items: center; }
+kbd { font: 11px Consolas, monospace; background: var(--bg2); border: 1px solid var(--line2); border-bottom-width: 2px;
+  border-radius: 5px; padding: 2px 6px; color: var(--text); justify-self: start; white-space: nowrap; }
+.help-grid span { color: #c9d3e6; font-size: 12.5px; }
+.help-box .hint { margin: 12px 0 0; line-height: 1.5; }
+
+/* выключатель анимаций и системная настройка «уменьшить движение» */
+body.noanim *, body.noanim *::before, body.noanim *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  body:not(.anim-forced) *, body:not(.anim-forced) *::before, body:not(.anim-forced) *::after { animation: none !important; transition: none !important; }
+}
+
+
+/* ======================= Для программистов ======================= */
+.btn.sm { padding: 5px 10px; font-size: 12px; gap: 5px; color: #c9d3e6; background: var(--panel); }
+.btn.sm:hover { background: var(--panel2); color: var(--text); }
+.btn.sm svg.i { width: 14px; height: 14px; }
+#btn-project.set { border-color: #3b82f688; color: var(--text); }
+#btn-project .lbl { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#btn-crit.on { background: #f59e0b22; border-color: #f59e0b; color: #fcd34d; }
+
+/* ссылки в задачах */
+.lnk { color: var(--accent2); text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; word-break: break-all; }
+.lnk.file { font-family: Consolas, monospace; font-size: 11px; background: #3b82f614; padding: 0 3px; border-radius: 3px; text-decoration: none;
+  display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; word-break: normal; }
+.lnk:hover { color: #bfdbfe; background: #3b82f630; }
+.help-box code { font: 11px Consolas, monospace; background: var(--bg2); padding: 1px 4px; border-radius: 3px; }
+
+/* блокировки */
+.lock { color: var(--muted); display: inline-flex; flex: none; }
+.lock svg.i { width: 13px; height: 13px; }
+.card-head .lock { margin-top: 1px; }
+.mlabel .lock { margin-right: 4px; vertical-align: -2px; }
+.stage.blocked { opacity: .62; border-style: dashed; }
+.stage.blocked:hover { opacity: .9; }
+.milestone.blocked .dia { border-style: dashed; opacity: .7; }
+.stage-row .lock { margin-left: 2px; }
+
+/* критический путь */
+.card.crit.stage { box-shadow: 0 0 0 2px #f59e0b, 0 0 24px #f59e0b44; opacity: 1; }
+.card.crit.milestone .dia { box-shadow: 0 0 0 3px #f59e0b; }
+.card.notcrit { opacity: .32; }
+#edges path.edge.crit { stroke: #f59e0b; stroke-width: 2.6; stroke-dasharray: none; animation: none; }
+
+/* панель TODO */
+#todo { position: absolute; top: 12px; right: 12px; bottom: 170px; width: 380px; background: var(--panel); border: 1px solid var(--line2);
+  border-radius: 10px; box-shadow: 0 10px 40px #000a; display: flex; flex-direction: column; overflow: hidden; z-index: 4; }
+#todo .ed-body select { width: 100%; }
+.todo-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; max-height: 100%; border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px; background: var(--bg2); flex: 1; min-height: 80px; }
+.todo-item { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 7px !important; padding: 5px 6px;
+  border-radius: 5px; color: var(--text) !important; font-size: 12px !important; cursor: pointer; }
+.todo-item:hover { background: var(--panel); }
+.todo-item.have { opacity: .45; cursor: default; }
+.todo-item input { margin-top: 2px; }
+.todo-text { display: flex; flex-direction: column; gap: 2px; line-height: 1.35; }
+.todo-text small { color: var(--muted); font: 10.5px Consolas, monospace; }
+.todo-tag { font: 600 10px Consolas, monospace; padding: 1px 5px; border-radius: 4px; background: #3b82f630; color: #bfdbfe; flex: none; margin-top: 1px; }
+.todo-tag.t-fixme { background: #f43f5e30; color: #fda4af; }
+.todo-tag.t-hack, .todo-tag.t-xxx { background: #eab30830; color: #fde68a; }
+#todo .ed-foot .btn.primary { margin-left: auto; }
+
+/* круговые связи */
+#edges path.edge.cycle { stroke: #f43f5e; stroke-width: 2.2; stroke-dasharray: 5 5; animation: none; }
+.btn.sm.warn { border-color: #f43f5e88; color: #fda4af; background: #f43f5e1a; }
+.btn.sm.warn:hover { background: #f43f5e33; color: #fff; }
+
+/* замок карты */
+#toolbar #btn-lock.on { background: #eab30826; color: #fde68a; }
+body.locked #toolbar button[data-tool]:not([data-tool="select"]):not([data-tool="hand"]),
+body.locked #toolbar #btn-del { opacity: .3; }
+body.locked .add-task { display: none; }
+body.locked #canvas, body.locked #canvas.tool-select { cursor: grab; }
+body.locked #canvas.panning { cursor: grabbing; }
+body.locked .task-check, body.locked .lnk { cursor: pointer; }

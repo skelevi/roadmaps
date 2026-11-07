@@ -162,6 +162,128 @@ class Api:
         os.startfile(MAPS_DIR)
         return True
 
+    # ---------- для программистов: папка проекта, ссылки на код, TODO ----------
+    def pick_folder(self):
+        kind = getattr(webview, "FOLDER_DIALOG", None)
+        if kind is None:
+            kind = webview.FileDialog.FOLDER
+        res = self._window.create_file_dialog(kind)
+        if not res:
+            return None
+        return str(res[0] if isinstance(res, (list, tuple)) else res)
+
+    def describe_link(self, target, project=None):
+        """Что сделать по ссылке из задачи: открыть сайт, файл в редакторе или показать файл в папке."""
+        target = str(target).strip()
+        if re.match(r"^https?://", target, re.I):
+            return {"kind": "url", "target": target}
+        m = re.match(r"^(.*?)(?::(\d+))?(?::\d+)?$", target)
+        path_s, line = m.group(1), m.group(2)
+        p = Path(path_s)
+        if not p.is_absolute():
+            if not project:
+                return {"kind": "error", "error": "Укажите папку проекта (кнопка «Проект» сверху), чтобы открывать относительные пути"}
+            p = Path(project) / p
+        p = p.resolve()
+        if not p.exists():
+            return {"kind": "error", "error": f"Файл не найден: {p}"}
+        if p.is_dir():
+            return {"kind": "folder", "path": str(p)}
+        text_file = p.suffix.lower() in CODE_EXT or p.suffix.lower() in {".json", ".txt", ".ini", ".cfg", ".xml", ".log"}
+        editor = find_editor()
+        if editor and text_file:
+            return {"kind": "editor", "path": str(p), "line": int(line or 1), "editor": editor[0], "style": editor[1],
+                    "editor_name": editor[2]}
+        if text_file:
+            # редактора кода нет — открываем в Блокноте (он ничего не запускает)
+            return {"kind": "editor", "path": str(p), "line": int(line or 1), "editor": "notepad.exe", "style": "plain",
+                    "editor_name": "Блокнот"}
+        if p.suffix.lower() in RUNNABLE:
+            # исполняемые файлы не запускаем — только показываем в проводнике
+            return {"kind": "reveal", "path": str(p)}
+        return {"kind": "file", "path": str(p)}
+
+    def open_link(self, target, project=None):
+        import subprocess
+        import webbrowser
+        d = self.describe_link(target, project)
+        k = d["kind"]
+        if k == "url":
+            webbrowser.open(d["target"])
+        elif k == "editor":
+            if d["style"] == "goto":          # VS Code / Cursor: -g файл:строка
+                args = [d["editor"], "-g", f"{d['path']}:{d['line']}"]
+            elif d["style"] == "npp":         # Notepad++: -nСТРОКА файл
+                args = [d["editor"], f"-n{d['line']}", d["path"]]
+            else:
+                args = [d["editor"], d["path"]]
+            subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        elif k == "reveal":
+            subprocess.Popen(["explorer", "/select,", d["path"]])
+        elif k in ("file", "folder"):
+            os.startfile(d["path"])
+        return d
+
+    def scan_todos(self, project, limit=500):
+        """Ищет TODO/FIXME/HACK/XXX в коде проекта. Возвращает [{file, line, tag, text}]."""
+        root = Path(project)
+        if not root.is_dir():
+            return {"error": f"Папка не найдена: {project}"}
+        found = []
+        pat = re.compile(r"(?:#|//|/\*|<!--|--|;|\*)\s*(TODO|FIXME|HACK|XXX)\b[\s:(\-]*(.*)", re.I)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            for name in filenames:
+                f = Path(dirpath) / name
+                if f.suffix.lower() not in CODE_EXT:
+                    continue
+                try:
+                    if f.stat().st_size > 1_000_000:
+                        continue
+                    lines = f.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except OSError:
+                    continue
+                for i, ln in enumerate(lines, 1):
+                    mm = pat.search(ln)
+                    if mm:
+                        text = re.sub(r"\s*(\*/|-->)\s*$", "", mm.group(2)).strip() or "(без описания)"
+                        found.append({"file": f.relative_to(root).as_posix(), "line": i,
+                                      "tag": mm.group(1).upper(), "text": text[:200]})
+                        if len(found) >= limit:
+                            return found
+        return found
+
+
+SKIP_DIRS = {"node_modules", "venv", "env", "dist", "build", "__pycache__", "target", "bin", "obj", "out",
+             "vendor", "packages", "Library", "Temp"}
+CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".html", ".css", ".scss",
+            ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".swift",
+            ".lua", ".gd", ".dart", ".sql", ".sh", ".ps1", ".bat", ".yml", ".yaml", ".toml", ".md"}
+RUNNABLE = {".exe", ".bat", ".cmd", ".ps1", ".sh", ".vbs", ".js", ".msi", ".com", ".lnk", ".py", ".pyw"}
+
+
+def find_editor():
+    """Редактор кода, умеющий открыть файл на строке: (путь, способ, название) или None."""
+    import shutil
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    pf = Path(os.environ.get("ProgramFiles", ""))
+    pf86 = Path(os.environ.get("ProgramFiles(x86)", ""))
+    candidates = [
+        ("VS Code", "goto", ["code.cmd", "code"], [local / "Programs/Microsoft VS Code/bin/code.cmd",
+                                                     pf / "Microsoft VS Code/bin/code.cmd"]),
+        ("Cursor", "goto", ["cursor.cmd", "cursor"], [local / "Programs/cursor/resources/app/bin/cursor.cmd"]),
+        ("Notepad++", "npp", ["notepad++.exe"], [pf / "Notepad++/notepad++.exe", pf86 / "Notepad++/notepad++.exe"]),
+    ]
+    for name, style, names, paths in candidates:
+        for n in names:
+            p = shutil.which(n)
+            if p:
+                return p, style, name
+        for p in paths:
+            if p.exists():
+                return str(p), style, name
+    return None
+
 
 def main():
     api = Api()

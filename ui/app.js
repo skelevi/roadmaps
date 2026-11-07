@@ -25,6 +25,13 @@ const ICONS = {
   flag: '<path d="M5 21V4M5 4h12l-2.5 4L17 12H5"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  alert: '<path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5M12 17.2v.3"/>',
+  unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.6-1.7"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  todo: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1.2 1.2L7 5M3.5 12l1.2 1.2L7 11"/><circle cx="5" cy="18" r="1.2"/>',
+  route: '<circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="6" r="2.2"/><path d="M7 17c5-1 3-9 10-10"/>',
+  sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path d="m12 8 1.2 2.8L16 12l-2.8 1.2L12 16l-1.2-2.8L8 12l2.8-1.2z"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 3.8M12 16.8v.2"/>',
 };
 const icon = n => `<svg class="i" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
 document.querySelectorAll('[data-icon]').forEach(el => el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon)));
@@ -45,6 +52,13 @@ const S = {
   size: {},                // id -> {w,h}
   editing: null,           // id этапа в редакторе
   lastMtimes: '',
+  flash: {},               // id -> время: карточка изменилась в файле
+  celebrate: {},           // id -> время: этап только что закрыт
+  enterAnim: false,        // плавное появление карточек при открытии карты
+  hoverId: null,
+  locked: false,           // замок: карточки не двигаются и не редактируются
+  critOn: false,           // показан критический путь
+  crit: null,
 };
 let api = null;
 
@@ -69,8 +83,15 @@ function normalize(doc) {
   return doc;
 }
 
-function status(s) {
+function status(s, seen = new Set()) {
   if (['todo', 'active', 'done'].includes(s.status)) return s.status;
+  if (s.type === 'milestone' && !s.tasks.length) {
+    // веха пройдена, когда закрыты все этапы перед ней (seen — защита от циклов)
+    if (!s.after.length || seen.has(s.id)) return 'todo';
+    seen.add(s.id);
+    const prev = livePreds(s);
+    return prev.length && prev.every(p => status(p, seen) === 'done') ? 'done' : 'todo';
+  }
   const t = s.tasks;
   if (!t.length) return 'todo';
   const d = t.filter(x => x.done).length;
@@ -176,7 +197,9 @@ async function openMap(id, { keepView = false } = {}) {
   S.id = id;
   S.doc = normalize(res.data);
   S.mtime = res.mtime;
-  if (switching) { S.undo = []; S.redo = []; S.sel.clear(); S.selEdge = null; S.connectFrom = null; S.editing = null; }
+  if (switching) { S.undo = []; S.redo = []; S.sel.clear(); S.selEdge = null; S.connectFrom = null; S.editing = null;
+    S.flash = {}; S.celebrate = {}; S.enterAnim = true; S.critOn = false;
+    $('#btn-crit').classList.remove('on'); $('#todo').classList.add('hidden'); }
   if (S.editing && !stageById(S.editing)) S.editing = null;
   try { localStorage.setItem('lastMap', id); } catch {}
   const laid = autoLayout(S.doc);
@@ -235,46 +258,78 @@ function renderStages() {
   $('#stages').innerHTML = rows.map(s => {
     const st = status(s), t = s.tasks.length, d = s.tasks.filter(x => x.done).length;
     return `<div class="stage-row st-${st} ${S.sel.has('s:' + s.id) ? 'on' : ''}" data-id="${esc(s.id)}" title="${esc(s.title)}">
-      ${stageIcon(s, st)}<span class="t">${esc(s.title)}</span>
+      ${stageIcon(s, st)}<span class="t">${esc(s.title)}</span>${isBlocked(s) ? `<span class="lock" title="Ждёт предыдущие этапы">${icon('lock')}</span>` : ''}
       ${s.flag ? `<span class="flag">${icon('flag')}</span>` : ''}
       ${t ? `<span class="n">${d}/${t}</span>` : ''}</div>`;
   }).join('') || '<div class="hint" style="padding:6px">Нет этапов</div>';
 }
 
 function renderTop() {
+  renderProjectBtn();
+  renderCycleWarn();
   $('#map-title').textContent = S.doc ? S.doc.title : '—';
   if (!S.doc) { $('#top-progress').innerHTML = ''; return; }
   const all = S.doc.stages, done = all.filter(s => status(s) === 'done').length;
-  $('#top-progress').innerHTML = all.length ? `${ring(done, all.length)}${done} из ${all.length} ${plural(all.length, 'этапа', 'этапов', 'этапов')}` : '';
+  const tasks = all.flatMap(s => s.tasks), td = tasks.filter(x => x.done).length;
+  const pct = tasks.length ? ` · ${Math.round(td / tasks.length * 100)}% задач` : '';
+  $('#top-progress').innerHTML = all.length ? `${ring(done, all.length)}${done} из ${all.length} ${plural(all.length, 'этапа', 'этапов', 'этапов')}${pct}` : '';
 }
 
 // ---------------------------------------------------------------- рендер: холст
+// Анимация, начатая в момент t0, при перерисовке продолжается с того же места (отрицательная задержка),
+// поэтому частые перерисовки не запускают её заново.
+function fxAnim(map, id, dur) {
+  const t0 = map[id];
+  if (t0 == null) return null;
+  const el = (performance.now() - t0) / 1000;
+  if (el > dur) { delete map[id]; return null; }
+  return -el;
+}
+let enterIndex = 0;
+function fxAttrs(s) {
+  let cls = '', style = '';
+  if (S.enterAnim) { cls += ' enter'; style += `--d:${Math.min(0.5, enterIndex++ * 0.03)}s;`; }
+  const ch = fxAnim(S.flash, s.id, 2.2), ce = fxAnim(S.celebrate, s.id, 1.6);
+  if (ce != null) { cls += ' celebrate'; style += `animation-delay:${ce}s;`; }
+  else if (ch != null) { cls += ' changed'; style += `animation-delay:${ch}s;`; }
+  return { cls, style };
+}
 function cardHTML(s) {
   const st = status(s), sel = S.sel.has('s:' + s.id) ? 'sel' : '', dim = matches(s) ? '' : 'dim';
   const cf = S.connectFrom === s.id ? 'connect-from' : '';
   const color = s.color ? `--c:${esc(s.color)};` : '';
+  const fx = fxAttrs(s);
+  const blocked = isBlocked(s);
+  const lock = blocked ? `<span class="lock" title="Ждёт: ${esc(livePreds(s).filter(p => status(p) !== 'done').map(p => p.title).join(', '))}">${icon('lock')}</span>` : '';
+  if (S.critOn && S.crit) fx.cls += S.crit.ids.includes(s.id) ? ' crit' : ' notcrit';
+  if (blocked) fx.cls += ' blocked';
   if (s.type === 'milestone')
-    return `<div class="card milestone st-${st} ${sel} ${dim} ${cf}" data-kind="s" data-id="${esc(s.id)}" style="left:${s.x}px;top:${s.y}px">
-      <div class="dia"></div><div class="mlabel">${esc(s.title)}</div></div>`;
+    return `<div class="card milestone st-${st} ${sel} ${dim} ${cf}${fx.cls}" data-kind="s" data-id="${esc(s.id)}" style="left:${s.x}px;top:${s.y}px;${fx.style}">
+      <div class="dia"></div><div class="mlabel">${lock}${esc(s.title)}</div></div>`;
   const t = s.tasks.length, d = s.tasks.filter(x => x.done).length;
-  return `<div class="card stage st-${st} ${sel} ${dim} ${cf}" data-kind="s" data-id="${esc(s.id)}" style="left:${s.x}px;top:${s.y}px;${s.w ? `width:${s.w}px;` : ''}${color}">
-    <div class="card-head"><div class="ctitle">${esc(s.title)}</div>${s.flag ? `<span class="cflag">${icon('flag')}</span>` : ''}${t ? `<span class="cnt">${d}/${t}</span>` : ''}</div>
+  return `<div class="card stage st-${st} ${sel} ${dim} ${cf}${fx.cls}" data-kind="s" data-id="${esc(s.id)}" style="left:${s.x}px;top:${s.y}px;${s.w ? `width:${s.w}px;` : ''}${color}${fx.style}">
+    <div class="card-head">${lock}<div class="ctitle">${esc(s.title)}</div>${s.flag ? `<span class="cflag">${icon('flag')}</span>` : ''}${t ? `<span class="cnt">${d}/${t}</span>` : ''}</div>
     ${t ? `<div class="bar"><i style="width:${d / t * 100}%"></i></div>` : ''}
-    ${s.description ? `<div class="cdesc">${esc(s.description)}</div>` : ''}
-    ${t ? `<ul class="tasks">${s.tasks.map((x, i) => `<li class="${x.done ? 'done' : ''}"><span class="task-check" data-i="${i}">${x.done ? icon('check') : ''}</span><span>${esc(x.text)}</span></li>`).join('')}</ul>` : ''}
+    ${s.description ? `<div class="cdesc">${linkify(s.description)}</div>` : ''}
+    ${t ? `<ul class="tasks">${s.tasks.map((x, i) => `<li class="${x.done ? 'done' : ''}"><span class="task-check" data-i="${i}">${x.done ? icon('check') : ''}</span><span>${linkify(x.text)}</span></li>`).join('')}</ul>` : ''}
     ${s.tag ? `<span class="ctag">${esc(s.tag)}</span>` : ''}
+    <button class="add-task" title="Быстро добавить задачу">+</button>
   </div>`;
 }
 
 function renderCanvas() {
   const items = $('#items');
   if (!S.doc) { items.innerHTML = ''; $('#edge-g').innerHTML = ''; return; }
-  items.innerHTML = S.doc.stages.map(cardHTML).join('') + S.doc.notes.map(n =>
-    `<div class="note ${S.sel.has('n:' + n.id) ? 'sel' : ''} ${S.search && !n.text.toLowerCase().includes(S.search.toLowerCase()) ? 'dim' : ''}" data-kind="n" data-id="${esc(n.id)}"
+  enterIndex = 0;
+  S.crit = S.critOn ? criticalPath() : null;
+  const order = [...S.doc.stages].sort((a, b) => a.x - b.x || a.y - b.y);
+  items.innerHTML = order.map(cardHTML).join('') + S.doc.notes.map(n =>
+    `<div class="note${S.enterAnim ? ' enter' : ''} ${S.sel.has('n:' + n.id) ? 'sel' : ''} ${S.search && !n.text.toLowerCase().includes(S.search.toLowerCase()) ? 'dim' : ''}" data-kind="n" data-id="${esc(n.id)}"
       style="left:${n.x}px;top:${n.y}px;font-size:${n.size || 18}px;${n.color ? `color:${esc(n.color)}` : ''}">${esc(n.text)}</div>`).join('');
   S.size = {};
   items.querySelectorAll('.card').forEach(el => { S.size[el.dataset.id] = { w: el.offsetWidth, h: el.offsetHeight }; });
   $('#empty').classList.toggle('hidden', S.doc.stages.length + S.doc.notes.length > 0);
+  S.enterAnim = false;
   renderEdges();
 }
 
@@ -301,7 +356,13 @@ function renderEdges() {
     const d = edgePath(a, b);
     const hl = S.selEdge && S.selEdge.from === fid && S.selEdge.to === b.id;
     const touch = S.sel.has('s:' + a.id) || S.sel.has('s:' + b.id);
-    h += `<path class="edge ${status(a) === 'done' ? 'done' : ''} ${hl || touch ? 'hl' : ''}" d="${d}"/>
+    const sa = status(a), sb = status(b);
+    const flow = sb === 'active' || (sa === 'done' && sb !== 'done');   // «энергия» течёт к текущим этапам
+    const hov = S.hoverId && (S.hoverId === a.id || S.hoverId === b.id);
+    const ci = S.critOn && S.crit ? S.crit.ids.indexOf(b.id) : -1;
+    const crit = ci > 0 && S.crit.ids[ci - 1] === a.id;
+    const cyc = cycleEdges().has(fid + '>' + b.id);
+    h += `<path class="edge ${sa === 'done' ? 'done' : ''} ${hl || touch ? 'hl' : ''} ${flow ? 'flow' : ''} ${hov ? 'hov' : ''} ${crit ? 'crit' : ''} ${cyc ? 'cycle' : ''}" data-from="${esc(fid)}" data-to="${esc(b.id)}" d="${d}"/>
           <path class="hit" data-from="${esc(fid)}" data-to="${esc(b.id)}" d="${d}"/>`;
   }
   $('#edge-g').innerHTML = h;
@@ -497,6 +558,7 @@ function createNote(x, y) {
   editNote(n.id);
 }
 function editNote(id) {
+  if (S.locked) return;
   const el = document.querySelector(`.note[data-id="${CSS.escape(id)}"]`);
   if (!el) return;
   el.contentEditable = 'true';
@@ -542,18 +604,371 @@ function connect(fromId, toId) {
   if (fromId === toId) return;
   const b = stageById(toId);
   if (!b || b.after.includes(fromId)) return;
+  const loop = wouldCycle(fromId, toId);
   pushUndo();
   b.after.push(fromId);
   afterChange();
+  if (loop) toast('Эта стрелка замыкает круг: этапы будут ждать друг друга. Ctrl+Z — отменить');
 }
 function toggleTask(id, i) {
   const s = stageById(id);
   if (!s || !s.tasks[i]) return;
   pushUndo();
+  const wasDone = status(s) === 'done';
+  const mapWasDone = mapDone();
   s.tasks[i].done = !s.tasks[i].done;
+  const nowDone = status(s) === 'done';
+  if (nowDone && !wasDone) S.celebrate[id] = performance.now();
   afterChange();
+  if (!s.tasks[i].done) return;
+  const box = document.querySelector(`.card[data-id="${CSS.escape(id)}"] .task-check[data-i="${i}"]`);
+  if (box) { box.classList.add('pop'); confettiAt(box, 14, 0.6); }
+  if (nowDone && !wasDone) {
+    const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+    if (card) confettiAt(card, 70, 1.1, 'top');
+    if (mapDone() && !mapWasDone) setTimeout(() => { confettiRain(); toast('Карта пройдена целиком — поздравляю!'); }, 350);
+    else toast(`Этап «${s.title}» завершён`);
+  }
+}
+function mapDone() {
+  return !!S.doc && S.doc.stages.some(s => s.type !== 'milestone') &&
+    S.doc.stages.every(s => s.type === 'milestone' || status(s) === 'done');
+}
+
+// ---------------------------------------------------------------- конфетти (лёгкий canvas поверх холста)
+const confetti = { parts: [], running: false };
+const CONF_COLORS = ['#60a5fa', '#3b82f6', '#22c55e', '#eab308', '#f43f5e', '#e4eaf5'];
+function animOn() {
+  return !document.body.classList.contains('noanim') &&
+    (document.body.classList.contains('anim-forced') || !matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+function confettiAt(el, n, power = 1, from = 'center') {
+  if (!animOn()) return;
+  const c = $('#canvas').getBoundingClientRect(), r = el.getBoundingClientRect();
+  const x = r.left - c.left + r.width / 2, y = (from === 'top' ? r.top : r.top + r.height / 2) - c.top;
+  for (let k = 0; k < n; k++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * (from === 'top' ? 2.2 : 6.3);
+    const v = (120 + Math.random() * 260) * power;
+    confetti.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1 + Math.random() * 0.6,
+      rot: Math.random() * 6, vr: (Math.random() - 0.5) * 12, s: 3 + Math.random() * 4, col: CONF_COLORS[k % CONF_COLORS.length] });
+  }
+  runConfetti();
+}
+function confettiRain() {
+  if (!animOn()) return;
+  const c = $('#canvas').getBoundingClientRect();
+  for (let k = 0; k < 160; k++)
+    confetti.parts.push({ x: Math.random() * c.width, y: -20 - Math.random() * c.height * 0.5, vx: (Math.random() - 0.5) * 60,
+      vy: 60 + Math.random() * 120, life: 2.6 + Math.random(), rot: Math.random() * 6, vr: (Math.random() - 0.5) * 8,
+      s: 4 + Math.random() * 4, col: CONF_COLORS[k % CONF_COLORS.length] });
+  runConfetti();
+}
+function runConfetti() {
+  if (confetti.running) return;
+  confetti.running = true;
+  const cv = $('#confetti'), ctx = cv.getContext('2d');
+  let last = performance.now();
+  const frame = now => {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    for (const p of confetti.parts) {
+      p.vy += 520 * dt; p.vx *= 0.985; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; p.life -= dt;
+      ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.col;
+      ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore();
+    }
+    confetti.parts = confetti.parts.filter(p => p.life > 0 && p.y < h + 40);
+    if (confetti.parts.length) requestAnimationFrame(frame);
+    else { ctx.clearRect(0, 0, w, h); confetti.running = false; }
+  };
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- быстрая задача (кнопка «+» на карточке)
+function quickTask(id) {
+  const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+  if (!card || card.querySelector('.quick-task')) return;
+  const inp = document.createElement('input');
+  inp.className = 'quick-task';
+  inp.placeholder = 'Новая задача, Enter';
+  card.querySelector('.add-task').before(inp);
+  inp.focus();
+  setTimeout(() => inp.focus(), 0);   // на случай, если фокус перехватил клик
+  let done = false;
+  const finish = (save, again) => {
+    if (done) return;
+    done = true;
+    const text = inp.value.trim();
+    const s = stageById(id);
+    if (save && text && s) { pushUndo(); s.tasks.push({ text, done: false }); afterChange(); }
+    else renderCanvas();
+    if (again && text) quickTask(id);   // Enter — можно сразу вводить следующую
+  };
+  inp.addEventListener('keydown', k => {
+    if (k.key === 'Enter') { k.preventDefault(); finish(true, true); }
+    if (k.key === 'Escape') { k.preventDefault(); finish(false); }
+  });
+  inp.addEventListener('blur', () => finish(true));
+}
+
+// ---------------------------------------------------------------- замок карты
+function applyLock(on, quiet) {
+  S.locked = on;
+  document.body.classList.toggle('locked', on);
+  const b = $('#btn-lock');
+  b.classList.toggle('on', on);
+  b.innerHTML = icon(on ? 'lock' : 'unlock') + '<sub>L</sub>';
+  b.title = on ? 'Карта закреплена: карточки не двигаются, можно только отмечать задачи. Нажмите, чтобы снять (L)'
+               : 'Закрепить карту: карточки перестанут двигаться и редактироваться (L)';
+  if (on) {
+    if (S.tool !== 'select' && S.tool !== 'hand') { S.tool = 'select'; S.connectFrom = null; }
+    S.editing = null;
+    renderAll();
+  }
+  if (!quiet) toast(on ? 'Карта закреплена — карточки не двигаются, задачи отмечаются кликом' : 'Замок снят — карту снова можно редактировать');
+}
+function toggleLock() {
+  applyLock(!S.locked);
+  try { localStorage.setItem('locked', S.locked ? '1' : '0'); } catch {}
+}
+
+// ---------------------------------------------------------------- круговые связи
+// Стрелка a → b «круговая», если от b по стрелкам можно снова прийти к a: тогда этапы ждут друг друга вечно.
+// Такие стрелки рисуются красным и не учитываются в блокировках, вехах и критическом пути.
+let cycleCache = { key: null, edges: new Set() };
+function cycleEdges() {
+  if (!S.doc) return new Set();
+  const key = S.doc.stages.map(s => s.id + ':' + s.after.join(',')).join('|');
+  if (cycleCache.key === key) return cycleCache.edges;
+  const next = {};
+  for (const s of S.doc.stages) for (const a of s.after) (next[a] ||= []).push(s.id);
+  const reach = (from, target) => {
+    const seen = new Set([from]), stack = [from];
+    while (stack.length) {
+      const x = stack.pop();
+      if (x === target) return true;
+      for (const y of next[x] || []) if (!seen.has(y)) { seen.add(y); stack.push(y); }
+    }
+    return false;
+  };
+  const edges = new Set();
+  for (const s of S.doc.stages) for (const a of s.after) if (stageById(a) && reach(s.id, a)) edges.add(a + '>' + s.id);
+  cycleCache = { key, edges };
+  return edges;
+}
+function livePreds(s) {
+  const cyc = cycleEdges();
+  return s.after.filter(a => !cyc.has(a + '>' + s.id)).map(stageById).filter(Boolean);
+}
+function wouldCycle(fromId, toId) {
+  // появится ли круг, если добавить стрелку from → to: можно ли уже дойти от to до from
+  const next = {};
+  for (const s of S.doc.stages) for (const a of s.after) (next[a] ||= []).push(s.id);
+  const seen = new Set([toId]), stack = [toId];
+  while (stack.length) {
+    const x = stack.pop();
+    if (x === fromId) return true;
+    for (const y of next[x] || []) if (!seen.has(y)) { seen.add(y); stack.push(y); }
+  }
+  return false;
+}
+function renderCycleWarn() {
+  const n = cycleEdges().size, b = $('#cycle-warn');
+  if (!b) return;
+  b.classList.toggle('hidden', !n);
+  b.querySelector('.lbl').textContent = `Круговые связи: ${n}`;
+}
+function showCycle() {
+  const first = [...cycleEdges()][0];
+  if (!first) return;
+  const [from, to] = first.split('>');
+  S.sel.clear();
+  S.selEdge = { from, to };
+  focusStage(to);
+  S.sel.clear();
+  S.selEdge = { from, to };
+  renderAll();
+  toast('Красные стрелки замыкают круг — этапы ждут друг друга. Выделена одна: нажмите Delete, чтобы удалить');
+}
+
+// ---------------------------------------------------------------- для программистов
+// Ссылки в задачах: https://… и пути к файлам вида src/app.py:120 (относительно папки проекта карты).
+const CODE_EXT_RE = 'py|pyw|js|jsx|ts|tsx|mjs|cjs|vue|svelte|html|css|scss|json|md|cs|cpp|cc|c|h|hpp|java|kt|go|rs|rb|php|swift|lua|gd|dart|sql|sh|ps1|bat|yml|yaml|toml|txt|ini|cfg|xml';
+const LINK_RE = new RegExp(`(https?:\\/\\/[^\\s<>"']+[^\\s<>"'.,;:!?)\\]])|(?<![\\w.\\-\\\\/:])((?:[A-Za-z]:[\\\\/])?(?:[\\w.\\-]+[\\\\/])*[\\w\\-.]*[\\w\\-]\\.(?:${CODE_EXT_RE})(?::\\d+){0,2})(?!\\w|\\.\\w)`, 'g');
+function linkify(text) {
+  let out = '', last = 0;
+  for (const m of String(text).matchAll(LINK_RE)) {
+    out += esc(text.slice(last, m.index));
+    const target = m[0];
+    let label = m[1] ? target.replace(/^https?:\/\/(www\.)?/, '') : target;
+    if (label.length > 42) label = '…' + label.slice(-40);
+    out += `<a class="lnk ${m[1] ? 'url' : 'file'}" data-link="${esc(target)}" title="${m[1] ? 'Открыть в браузере' : 'Открыть в редакторе'}: ${esc(target)}">${esc(label)}</a>`;
+    last = m.index + target.length;
+  }
+  return out + esc(String(text).slice(last));
+}
+async function openLink(target) {
+  try {
+    const d = await api.open_link(target, S.doc?.project || null);
+    if (d.kind === 'error') toast(d.error);
+    else if (d.kind === 'url') toast('Открываю в браузере');
+    else if (d.kind === 'editor') toast(`Открываю в ${d.editor_name}: ${d.path.split(/[\\/]/).pop()}${d.style === 'plain' ? '' : ':' + d.line}`);
+    else if (d.kind === 'reveal') toast('Показываю файл в проводнике');
+    else toast('Открываю файл');
+  } catch (e) { toast('Не удалось открыть: ' + e); }
+}
+
+// Папка проекта карты
+function projectName() {
+  return S.doc?.project ? S.doc.project.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '';
+}
+function renderProjectBtn() {
+  const b = $('#btn-project');
+  if (!b) return;
+  const n = projectName();
+  b.querySelector('.lbl').textContent = n || 'Проект';
+  b.classList.toggle('set', !!n);
+  b.title = n ? `Папка проекта: ${S.doc.project}\nНажмите, чтобы выбрать другую` : 'Выбрать папку проекта: от неё считаются пути в задачах и ищутся TODO';
+}
+async function pickProject() {
+  if (!S.doc) return null;
+  const p = await api.pick_folder();
+  if (!p) return null;
+  pushUndo();
+  S.doc.project = p;
+  afterChange();
+  toast(`Папка проекта: ${projectName()}`);
+  return p;
+}
+
+// Блокировки: этап не закрыт, а этапы перед ним ещё не готовы
+function isBlocked(s) {
+  if (status(s) === 'done') return false;
+  return livePreds(s).some(p => status(p) !== 'done');
+}
+
+// Критический путь: самая «тяжёлая» цепочка по оставшимся задачам
+function criticalPath() {
+  const memo = {}, from = {}, visiting = new Set();
+  const w = s => status(s) === 'done' ? 0 : (s.type === 'milestone' ? 0 : Math.max(1, s.tasks.filter(t => !t.done).length));
+  const dist = s => {
+    if (memo[s.id] != null) return memo[s.id];
+    if (visiting.has(s.id)) return 0;
+    visiting.add(s.id);
+    let best = 0, arg = null;
+    for (const p of livePreds(s)) {
+      const id = p.id;
+      const d = dist(p);
+      if (d > best) { best = d; arg = id; }
+    }
+    visiting.delete(s.id);
+    from[s.id] = arg;
+    return (memo[s.id] = best + w(s));
+  };
+  let end = null, max = 0;
+  for (const s of S.doc.stages) { const d = dist(s); if (d > max) { max = d; end = s.id; } }
+  if (!end) return null;
+  const path = [];
+  for (let id = end; id; id = from[id]) path.unshift(id);
+  // хвост: вехи сразу после конца цепочки (обычно «Релиз»)
+  let tail = true;
+  while (tail) {
+    tail = false;
+    const next = S.doc.stages.find(s => s.type === 'milestone' && s.after.includes(path[path.length - 1]) && !path.includes(s.id));
+    if (next) { path.push(next.id); tail = true; }
+  }
+  return { ids: path, tasks: max };
+}
+function toggleCritical(force) {
+  if (!S.doc) return;
+  S.critOn = force === undefined ? !S.critOn : force;
+  $('#btn-crit').classList.toggle('on', S.critOn);
+  renderCanvas();
+  if (S.critOn) {
+    const cp = S.crit;
+    if (!cp) toast('Все этапы готовы — критического пути нет');
+    else toast(`Критический путь: ${cp.ids.length} ${plural(cp.ids.length, 'этап', 'этапа', 'этапов')}, осталось задач: ${cp.tasks}`);
+  }
+}
+
+// Сбор TODO из кода проекта
+let todoFound = [];
+async function openTodo() {
+  if (!S.doc) return;
+  let project = S.doc.project;
+  if (!project) { project = await pickProject(); if (!project) return; }
+  const panel = $('#todo');
+  panel.classList.remove('hidden');
+  panel.innerHTML = `<div class="ed-head"><span class="grow">TODO из кода</span><button class="ibtn" data-todo="close">${icon('x')}</button></div>
+    <div class="ed-body"><span class="hint">Ищу TODO, FIXME, HACK в «${esc(projectName())}»…</span></div>`;
+  const res = await api.scan_todos(project);
+  if (res.error) { panel.querySelector('.ed-body').innerHTML = `<span class="hint">${esc(res.error)}</span>`; return; }
+  const existing = S.doc.stages.flatMap(s => s.tasks.map(t => t.text)).join('\n');
+  todoFound = res.map(t => ({ ...t, ref: `${t.file}:${t.line}`, have: existing.includes(`${t.file}:${t.line}`) }));
+  const fresh = todoFound.filter(t => !t.have).length;
+  const stages = [...S.doc.stages].filter(s => s.type !== 'milestone').sort((a, b) => a.x - b.x || a.y - b.y);
+  panel.innerHTML = `<div class="ed-head"><span class="grow">TODO из кода · ${esc(projectName())}</span><button class="ibtn" data-todo="close" title="Закрыть">${icon('x')}</button></div>
+    <div class="ed-body">
+      ${todoFound.length ? `<span class="hint">Найдено: ${todoFound.length}, новых: ${fresh}. Уже добавленные отмечены серым.</span>
+      <label class="chk"><input type="checkbox" data-todo="all" ${fresh ? 'checked' : ''}> Выбрать все новые</label>
+      <div class="todo-list">${todoFound.map((t, i) => `<label class="todo-item ${t.have ? 'have' : ''}">
+        <input type="checkbox" data-ti="${i}" ${t.have ? 'disabled' : 'checked'}>
+        <span class="todo-tag t-${t.tag.toLowerCase()}">${t.tag}</span>
+        <span class="todo-text">${esc(t.text)}<small>${esc(t.ref)}</small></span></label>`).join('')}</div>
+      <label>Куда добавить<select data-todo="target">
+        <option value="__new">Новый этап «TODO из кода»</option>
+        ${stages.map(s => `<option value="${esc(s.id)}">${esc(s.title)}</option>`).join('')}</select></label>`
+      : `<span class="hint">В папке «${esc(projectName())}» не нашлось комментариев TODO / FIXME / HACK / XXX.</span>`}
+    </div>
+    <div class="ed-foot"><button class="btn" data-todo="rescan">Искать заново</button>
+      ${todoFound.length ? `<button class="btn primary" data-todo="add">Добавить</button>` : ''}</div>`;
+}
+function addTodos() {
+  const panel = $('#todo');
+  const picked = [...panel.querySelectorAll('input[data-ti]:checked')].map(i => todoFound[+i.dataset.ti]);
+  if (!picked.length) { toast('Ничего не выбрано'); return; }
+  pushUndo();
+  let target = panel.querySelector('[data-todo="target"]').value;
+  let stage = stageById(target);
+  if (!stage) {
+    stage = { id: uid('s'), title: 'TODO из кода', type: 'stage', tasks: [], after: [], tag: 'из кода' };
+    const b = bounds();
+    stage.x = b ? b.x1 : 0;
+    stage.y = b ? b.y2 + 60 : 0;
+    S.doc.stages.push(stage);
+  }
+  for (const t of picked) stage.tasks.push({ text: `${t.tag}: ${t.text} — ${t.ref}`, done: false });
+  panel.classList.add('hidden');
+  afterChange();
+  focusStage(stage.id);
+  S.flash[stage.id] = performance.now();
+  toast(`Добавлено задач: ${picked.length} → «${stage.title}»`);
+}
+
+// ---------------------------------------------------------------- подсветка связей при наведении
+function setHover(id) {
+  if (S.hoverId === id) return;
+  S.hoverId = id;
+  document.querySelectorAll('#edge-g path.edge').forEach(p =>
+    p.classList.toggle('hov', !!id && (p.dataset.from === id || p.dataset.to === id)));
+}
+
+// ---------------------------------------------------------------- справка и выключатель анимаций
+function toggleHelp(show) {
+  const h = $('#help');
+  h.classList.toggle('hidden', show === undefined ? !h.classList.contains('hidden') : !show);
+}
+function applyAnim(on) {
+  document.body.classList.toggle('noanim', !on);
+  document.body.classList.toggle('anim-forced', on);
+  $('#btn-anim').classList.toggle('on', on);
+  $('#btn-anim').title = on ? 'Анимации включены — нажмите, чтобы выключить' : 'Анимации выключены — нажмите, чтобы включить';
 }
 function setTool(t) {
+  if (S.locked && t !== 'select' && t !== 'hand') { toast('Карта закреплена — можно только отмечать задачи. Снять замок: кнопка с замком или L'); t = 'select'; }
   S.tool = t;
   S.connectFrom = null;
   $('#edge-ghost').classList.add('hidden');
@@ -579,7 +994,7 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false });
 
 canvas.addEventListener('pointerdown', e => {
-  if (e.target.closest('.panel, #toolbar, #editor, .menu')) return;
+  if (e.target.closest('.panel, #toolbar, #editor, .menu, #help, #todo')) return;
   if (!S.doc) return;
   $('#export-menu').classList.add('hidden');
   const r = canvas.getBoundingClientRect();
@@ -591,11 +1006,23 @@ canvas.addEventListener('pointerdown', e => {
   const item = e.target.closest('[data-kind]');
   const hit = e.target.closest('path.hit');
 
+  if (e.target.closest('.quick-task')) return;
+  const lnk = e.target.closest('.lnk');
+  if (lnk && S.tool === 'select') { e.preventDefault(); e.stopPropagation(); openLink(lnk.dataset.link); return; }
+  if (e.target.closest('.add-task') && item) { e.preventDefault(); if (!S.locked) quickTask(item.dataset.id); return; }
   if (e.target.closest('.task-check') && item && S.tool === 'select') {
     toggleTask(item.dataset.id, +e.target.closest('.task-check').dataset.i);
     return;
   }
   if (item?.isContentEditable) return;
+  if (S.locked) {
+    // закреплено: клик по карточке только выделяет её, перетаскивание двигает холст, а не карточку
+    if (item && item.dataset.kind === 's') { S.sel = new Set(['s:' + item.dataset.id]); S.selEdge = null; renderStages(); renderTimeline();
+      document.querySelectorAll('#items [data-kind]').forEach(el => el.classList.toggle('sel', S.sel.has(el.dataset.kind + ':' + el.dataset.id))); renderEdges(); }
+    else if (!item && (S.sel.size || S.selEdge)) { S.sel.clear(); S.selEdge = null; renderAll(); }
+    panStart(); canvas.setPointerCapture(e.pointerId);
+    return;
+  }
 
   if (S.tool === 'connect') {
     if (item?.dataset.kind === 's') {
@@ -673,8 +1100,9 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('dblclick', e => {
   // из-за захвата указателя target = сам холст, поэтому ищем элемент под курсором
   const under = document.elementFromPoint(e.clientX, e.clientY);
-  if (under?.closest('.panel, #toolbar, #editor, .menu')) return;
+  if (under?.closest('.panel, #toolbar, #editor, .menu, #help, #todo')) return;
   const item = under?.closest('[data-kind]');
+  if (S.locked) { if (item) toast('Карта закреплена — можно только отмечать задачи. Снять замок: кнопка с замком или L'); return; }
   if (!item) { if (S.tool === 'select' && S.doc) { const w = toWorld(e.clientX, e.clientY); createStage('stage', w.x - 40, w.y - 20); } return; }
   if (item.dataset.kind === 's') { S.editing = item.dataset.id; $('#editor').dataset.id = ''; renderEditor(); }
   else editNote(item.dataset.id);
@@ -713,7 +1141,7 @@ $('#maps').addEventListener('click', async e => {
   if (row && row.dataset.id !== S.id) openMap(row.dataset.id);
 });
 $('#stages').addEventListener('click', e => { const r = e.target.closest('.stage-row'); if (r) focusStage(r.dataset.id); });
-$('#stages').addEventListener('dblclick', e => { const r = e.target.closest('.stage-row'); if (r) { S.editing = r.dataset.id; $('#editor').dataset.id = ''; renderEditor(); } });
+$('#stages').addEventListener('dblclick', e => { const r = e.target.closest('.stage-row'); if (S.locked) { if (r) focusStage(r.dataset.id); return; } if (r) { S.editing = r.dataset.id; $('#editor').dataset.id = ''; renderEditor(); } });
 $('#filter').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.filter = b.dataset.f;
@@ -732,6 +1160,7 @@ $('#new-map-input').addEventListener('keydown', async e => {
 $('#btn-folder').addEventListener('click', () => api.open_folder());
 $('#btn-side').addEventListener('click', () => { $('#app').classList.toggle('noside'); setTimeout(renderMinimap, 0); });
 $('#map-title').addEventListener('dblclick', e => {
+  if (S.locked) { toast('Карта закреплена — можно только отмечать задачи. Снять замок: кнопка с замком или L'); return; }
   if (!S.doc) return;
   const el = e.target, before = JSON.stringify(S.doc);
   el.contentEditable = 'true'; el.focus(); document.getSelection().selectAllChildren(el);
@@ -748,7 +1177,8 @@ $('#map-title').addEventListener('dblclick', e => {
 $('#toolbar').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.tool) setTool(b.dataset.tool);
-  if (b.id === 'btn-del') deleteSelection();
+  if (b.id === 'btn-del') { if (S.locked) toast('Карта закреплена — можно только отмечать задачи. Снять замок: кнопка с замком или L'); else deleteSelection(); }
+  if (b.id === 'btn-lock') toggleLock();
 });
 $('#z-in').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(1.2, r.width / 2, r.height / 2); });
 $('#z-out').addEventListener('click', () => { const r = canvas.getBoundingClientRect(); zoomAt(1 / 1.2, r.width / 2, r.height / 2); });
@@ -855,13 +1285,17 @@ document.addEventListener('keydown', e => {
   }
   if ((e.ctrlKey || e.metaKey) && (k === 'f' || k === 'а')) { e.preventDefault(); $('#search').focus(); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '?' || (e.code === 'Slash' && e.shiftKey) || e.key === 'F1') { e.preventDefault(); toggleHelp(); return; }
+  if (e.key === 'Escape' && !$('#help').classList.contains('hidden')) { toggleHelp(false); return; }
+  if (e.key === 'Escape' && !$('#todo').classList.contains('hidden')) { $('#todo').classList.add('hidden'); return; }
   if (e.key === ' ') { spaceDown = true; canvas.classList.add('tool-hand'); e.preventDefault(); return; }
-  if (e.key === 'Delete' || e.key === 'Backspace') { deleteSelection(); return; }
+  if (k === 'l' || k === 'д') { toggleLock(); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') { if (S.locked) toast('Карта закреплена — можно только отмечать задачи. Снять замок: кнопка с замком или L'); else deleteSelection(); return; }
   if (e.key === 'Escape') {
     if (S.editing) { S.editing = null; renderEditor(); return; }
     S.sel.clear(); S.selEdge = null; setTool('select'); return;
   }
-  if (e.key === 'Enter' && S.sel.size === 1) {
+  if (e.key === 'Enter' && S.sel.size === 1 && !S.locked) {
     const k1 = [...S.sel][0];
     if (k1.startsWith('s:')) { S.editing = k1.slice(2); $('#editor').dataset.id = ''; renderEditor(); }
     return;
@@ -870,6 +1304,7 @@ document.addEventListener('keydown', e => {
     '4': 'milestone', m: 'milestone', 'ь': 'milestone', '5': 'connect', c: 'connect', 'с': 'connect', '6': 'note', t: 'note', 'е': 'note' };
   if (map[k]) { setTool(map[k]); return; }
   if (k === 'f' || k === 'а') fit();
+  if (k === 'k' || k === 'л') toggleCritical();
   if (k === '+' || k === '=') $('#z-in').click();
   if (k === '-') $('#z-out').click();
 });
@@ -887,8 +1322,14 @@ async function poll() {
       if (S.id && !(S.id in m)) { S.id = null; S.doc = null; if (S.maps[0]) await openMap(S.maps[0].id); else renderAll(); }
       else if (S.id && !pendingSave && !drag && Math.abs(m[S.id] - S.mtime) > 1e-6) {
         S.undo.push(JSON.stringify(S.doc));
+        const sig = s => JSON.stringify([s.title, s.type, s.tasks, s.after, s.description, s.tag, s.flag, s.status]);
+        const before = Object.fromEntries(S.doc.stages.map(s => [s.id, sig(s)]));
         await openMap(S.id, { keepView: true });
-        toast('Карта обновлена из файла');
+        const now = performance.now();
+        let n = 0;
+        for (const s of S.doc.stages) if (before[s.id] !== sig(s)) { S.flash[s.id] = now; n++; }
+        if (n) renderCanvas();
+        toast(n ? `Карта обновлена из файла · изменено этапов: ${n}` : 'Карта обновлена из файла');
       }
       else if (!S.id && S.maps[0]) await openMap(S.maps[0].id);
     }
@@ -897,6 +1338,41 @@ async function poll() {
 }
 
 // ---------------------------------------------------------------- старт
+$('#items').addEventListener('mouseover', e => {
+  const c = e.target.closest('.card');
+  setHover(c ? c.dataset.id : null);
+});
+$('#items').addEventListener('mouseleave', () => setHover(null));
+$('#btn-help').addEventListener('click', () => toggleHelp());
+$('#btn-project').addEventListener('click', () => pickProject());
+$('#btn-todo').addEventListener('click', () => openTodo());
+$('#btn-crit').addEventListener('click', () => toggleCritical());
+$('#cycle-warn').addEventListener('click', () => showCycle());
+$('#todo').addEventListener('click', e => {
+  const a = e.target.closest('[data-todo]')?.dataset.todo;
+  if (a === 'close') $('#todo').classList.add('hidden');
+  if (a === 'rescan') openTodo();
+  if (a === 'add') addTodos();
+});
+$('#todo').addEventListener('change', e => {
+  if (e.target.dataset.todo === 'all')
+    $('#todo').querySelectorAll('input[data-ti]:not(:disabled)').forEach(i => { i.checked = e.target.checked; });
+});
+$('#help-close').addEventListener('click', () => toggleHelp(false));
+$('#help').addEventListener('click', e => { if (e.target.id === 'help') toggleHelp(false); });
+$('#btn-anim').addEventListener('click', () => {
+  const on = document.body.classList.contains('noanim');
+  applyAnim(on);
+  try { localStorage.setItem('anim', on ? '1' : '0'); } catch {}
+  toast(on ? 'Анимации включены' : 'Анимации выключены');
+});
+{
+  let saved = null; try { saved = localStorage.getItem('anim'); } catch {}
+  applyAnim(saved == null ? !matchMedia('(prefers-reduced-motion: reduce)').matches : saved === '1');
+}
+
+{ let l = null; try { l = localStorage.getItem('locked'); } catch {} applyLock(l === '1', true); }
+
 async function start() {
   api = window.pywebview.api;
   await refreshMaps();

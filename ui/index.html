@@ -22,7 +22,7 @@
 
     <div class="side-foot">
       <div><b>Мои карты</b><small id="maps-count"></small></div>
-      <button class="ibtn" id="btn-folder" title="Открыть папку с картами" data-icon="folder"></button>
+      <div class="foot-btns"><button class="ibtn" id="btn-anim" title="Анимации: вкл/выкл" data-icon="sparkle"></button><button class="ibtn" id="btn-folder" title="Открыть папку с картами" data-icon="folder"></button></div>
     </div>
   </aside>
 
@@ -32,6 +32,11 @@
       <div class="crumbs"><span class="muted">Дорожные карты</span><span class="muted">›</span><b id="map-title" title="Двойной клик — переименовать"></b>
         <span id="top-progress"></span></div>
       <div class="grow"></div>
+      <button class="btn sm warn hidden" id="cycle-warn" title="Этапы ждут друг друга по кругу — нажмите, чтобы показать"><span data-icon="alert"></span><span class="lbl">Круговые связи</span></button>
+      <button class="btn sm" id="btn-project"><span data-icon="folder"></span><span class="lbl">Проект</span></button>
+      <button class="btn sm" id="btn-todo" title="Собрать TODO / FIXME из кода проекта в задачи"><span data-icon="todo"></span>TODO</button>
+      <button class="btn sm" id="btn-crit" title="Критический путь — самая длинная цепочка оставшейся работы (K)"><span data-icon="route"></span>Крит. путь</button>
+      <button class="ibtn" id="btn-help" title="Горячие клавиши (?)" data-icon="help"></button>
       <button class="btn primary" id="btn-export"><span data-icon="export"></span>Экспорт</button>
     </header>
 
@@ -39,7 +44,7 @@
       <div id="viewport">
         <svg id="edges"><defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker>
-          <marker id="arr-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a78bfa"/></marker>
+          <marker id="arr-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#60a5fa"/></marker>
         </defs><g id="edge-g"></g><path id="edge-ghost" class="hidden"/></svg>
         <div id="items"></div>
       </div>
@@ -54,6 +59,8 @@
         <button data-tool="note" title="Текст — клик по холсту (T, 6)" data-icon="type"><sub>6</sub></button>
         <i class="sep"></i>
         <button id="btn-del" title="Удалить выделенное (Delete)" data-icon="trash"></button>
+        <i class="sep"></i>
+        <button id="btn-lock" title="Закрепить карту (L)"></button>
       </div>
 
       <div id="empty" class="hidden">
@@ -79,12 +86,32 @@
       </div>
 
       <div id="editor" class="hidden"></div>
+      <div id="todo" class="hidden"></div>
       <div id="export-menu" class="menu hidden">
         <button data-act="md">Сохранить как Markdown (.md)</button>
         <button data-act="png">Сохранить картинку (PNG)</button>
         <button data-act="folder">Открыть папку с файлами карт</button>
       </div>
       <div id="toast" class="hidden"></div>
+      <canvas id="confetti"></canvas>
+      <div id="help" class="hidden">
+        <div class="help-box">
+          <div class="help-head"><b>Горячие клавиши</b><button class="ibtn" id="help-close" data-icon="x" title="Закрыть (Esc)"></button></div>
+          <div class="help-grid">
+            <kbd>1</kbd><span>Рука — двигать холст</span><kbd>2</kbd><span>Выделение</span>
+            <kbd>3</kbd><span>Новый этап</span><kbd>4</kbd><span>Веха-ромб</span>
+            <kbd>5</kbd><span>Связь между этапами</span><kbd>6</kbd><span>Текст</span>
+            <kbd>Пробел</kbd><span>Двигать холст, пока зажат</span><kbd>F</kbd><span>Показать всю карту</span>
+            <kbd>Enter</kbd><span>Редактировать выделенный этап</span><kbd>Delete</kbd><span>Удалить выделенное</span>
+            <kbd>Ctrl+Z</kbd><span>Отменить</span><kbd>Ctrl+Y</kbd><span>Повторить</span>
+            <kbd>Ctrl+A</kbd><span>Выделить всё</span><kbd>Ctrl+F</kbd><span>Поиск</span>
+            <kbd>Колёсико</kbd><span>Масштаб</span><kbd>K</kbd><span>Критический путь</span>
+            <kbd>L</kbd><span>Замок: закрепить карту</span><kbd>Клик</kbd><span>Отметить задачу (и при замке)</span>
+            <kbd>?</kbd><span>Эта справка</span><kbd>Esc</kbd><span>Закрыть панель</span>
+          </div>
+          <p class="hint">Двойной клик по пустому месту — новый этап. Наведите на карточку и нажмите «+», чтобы быстро добавить задачу.<br>В задачах можно писать ссылки (https://…) и пути к коду вида <code>src/app.py:120</code> — клик откроет файл в VS Code на этой строке (пути считаются от папки «Проект»). 🔒 — этап ждёт, пока закроются этапы перед ним.</p>
+        </div>
+      </div>
     </div>
   </main>
 </div>
